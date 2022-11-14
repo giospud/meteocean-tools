@@ -97,6 +97,15 @@ ax.text(1.05, 0.725, r'$d_{50}$ [mm] ='+"{:5.2f}".format(d50), transform=ax.tran
 ax.text(1.05, 0.675, r'$d_{75}$ [mm] ='+"{:5.2f}".format(d75), transform=ax.transAxes)
 ax.text(1.05, 0.625, r'$d_{84}$ [mm] ='+"{:5.2f}".format(d84), transform=ax.transAxes)
 
+ax.text(1.05, 0.50, r'Folk & Ward Logaritmic', transform=ax.transAxes,fontsize=12)
+ax.text(1.05, 0.45, r'$\sigma$ ='+"{:5.2f}".format(sigL), transform=ax.transAxes)
+ax.text(1.05, 0.40, r'$skew$ ='+"{:5.2f}".format(skL), transform=ax.transAxes)
+ax.text(1.05, 0.35, r'$kurt$ ='+"{:5.2f}".format(kuL), transform=ax.transAxes)
+
+ax.text(1.05, 0.25, str_sort, transform=ax.transAxes)
+ax.text(1.05, 0.20, str_skew, transform=ax.transAxes)
+ax.text(1.05, 0.15, str_kurt, transform=ax.transAxes)
+
 fig.savefig('granu_01.png', bbox_inches='tight')
 #plt.show()
 
