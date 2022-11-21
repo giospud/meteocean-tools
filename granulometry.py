@@ -75,6 +75,40 @@ if (kuL>1.50 and kuL<3.00):
 if (kuL>3.00):
     str_kurt="Extremely Leptokurtic"
 
+
+# Wentworth (1922) grain size classification
+if (d50>4096):
+    szcls="Rock"
+elif (d50>256 and d50<4096):
+    szcls="Gravel - Boulder"
+elif (d50>64 and d50<256):
+    szcls="Gravel - Cobble"
+elif (d50>4 and d50<64):
+    szcls="Gravel - Pebble"
+elif (d50>2 and d50<4):
+    szcls="Gravel - Granule"
+elif (d50>1 and d50<2):
+    szcls="Sand - Very coarse"
+elif (d50>0.50 and d50<1):
+    szcls="Sand - Coarse"
+elif (d50>0.25 and d50<0.5):
+    szcls="Sand - Medium"
+elif (d50>0.125 and d50<0.25):
+    szcls="Sand - Fine"
+elif (d50>0.0625 and d50<0.125):
+    szcls="Sand - Very fine"
+elif (d50>0.031 and d50<0.0625):
+    szcls="Silt - Coarse"
+elif (d50>0.0156 and d50<0.031):
+    szcls="Silt - Medium"
+elif (d50>0.0078 and d50<0.0156):
+    szcls="Silt - Fine"
+elif (d50>0.0039 and d50<0.0078):
+    szcls="Silt - Very fine"
+elif (d50>0.00006 and d50<0.0039):
+    szcls="Clay"
+    
+
 #==============================================================================================
 # Plotting Results
 fig, ax = plt.subplots(figsize=(4,6))
@@ -105,6 +139,8 @@ ax.text(1.05, 0.35, r'$kurt$ ='+"{:5.2f}".format(kuL), transform=ax.transAxes)
 ax.text(1.05, 0.25, str_sort, transform=ax.transAxes)
 ax.text(1.05, 0.20, str_skew, transform=ax.transAxes)
 ax.text(1.05, 0.15, str_kurt, transform=ax.transAxes)
+
+ax.text(1.05, 0.075, szcls, transform=ax.transAxes)
 
 fig.savefig('granu_01.png', bbox_inches='tight')
 #plt.show()
@@ -148,5 +184,7 @@ ax1.text(1.55, 0.68, r'$kurt$ ='+"{:5.2f}".format(kuL), transform=ax1.transAxes)
 ax1.text(1.55, 0.63, str_sort, transform=ax1.transAxes)
 ax1.text(1.55, 0.59, str_skew, transform=ax1.transAxes)
 ax1.text(1.55, 0.55, str_kurt, transform=ax1.transAxes)
+
+ax1.text(1.05, 0.50, szcls, transform=ax1.transAxes)
 
 fig.savefig('granu_02.png', bbox_inches='tight')
