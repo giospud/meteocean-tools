@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 
+#=====================================================================
+
 def readWave(iu,fp,sr):
     """
     readWave(iu,fp,sr) - read wave data from input file 
@@ -29,6 +31,8 @@ def readWave(iu,fp,sr):
             df[var].interpolate(method='time',limit=12)
     return df
 
+#=====================================================================
+
 def wvlngth(Lt,dd,T):
     """
     wvlngth(Lt,dd,T) - Calculate wavelength with dispersion relationship
@@ -52,5 +56,27 @@ def wvlngth(Lt,dd,T):
         kn = k - ff/ffp
         
     L = 2.0*np.pi/k
-    return L    
+    return L
 
+#=====================================================================
+
+def am(df,var):
+    """
+    am(df,var) - find annual maxima for variable var
+    df - pandas dataframe
+    var - variable to find maxima
+    T  - wave period
+    """
+
+    r_max = df.loc[df[var].groupby(df.index.year).idxmax()]
+
+#    y_max = df[var].resample('YE').max()
+#    y_idx = df[var].groupby(df.index.year).idxmax().values
+#    result= pd.DataFrame({
+#    'max_value': y_max,
+#    'max_date': y_idx
+#    })
+    
+    return r_max
+
+#=====================================================================
