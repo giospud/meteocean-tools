@@ -18,9 +18,7 @@ def readWave(iu,fp,sr):
         df.columns=cnames
         for var in ('T02','T01','Tm10','Tp'):
             df.loc[df[var]<=0,var]=np.nan
-            df[var].interpolate(method='time',inplace=True,limit=12)
-#            df.method({var: time}, inplace=True)
-#            df[var] = df[var].method(time)
+            df[var].interpolate(method='time',limit=12)
 
     if iu==2:
         df = pd.read_table(fp, header=None,sep ='\s+', parse_dates=[[0,1,2,3]],index_col=0)
@@ -28,8 +26,8 @@ def readWave(iu,fp,sr):
         df.columns=['Hs','Tm','Tp','Dirm','Dirp','Spr','Lm','Lp','uw','vw','Hsws','Tmws','Dirws','s1Hs','s1Tm','s1Dir','s2Hs','s2Tm','s2Dir']
         for var in ('Tm','Tp'):
             df.loc[df[var]<=0,var]=np.nan
-            df[var].interpolate(method='time',inplace=True,limit=12)
-    return readWave
+            df[var].interpolate(method='time',limit=12)
+    return df
 
 def wvlngth(Lt,dd,T):
     """
