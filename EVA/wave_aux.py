@@ -3,7 +3,7 @@ import pandas as pd
 from scipy import stats
 from scipy.optimize import approx_fprime
 from scipy.optimize import minimize
-
+from joblib import Parallel, delayed
 
 #=====================================================================
 
@@ -122,7 +122,7 @@ def am(df,var):
 #=====================================================================
 
 
-def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000):
+def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000, n_jobs=-1):
     """
     Compute GEV return levels and confidence intervals.
 
@@ -138,6 +138,9 @@ def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000):
         Significance level
     n_boot : int
         Bootstrap samples (if bootstrap method)
+    n_jobs : int
+        Number of parallel jobs for bootstrap (default=-1 uses all CPUs)
+        Set to 1 to disable parallelization
 
     Returns
     -------
@@ -157,21 +160,23 @@ def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000):
     rl = stats.genextreme.ppf(P, c, loc=loc, scale=scale)
 
     # --------------------------------------------------
-    # 1) BOOTSTRAP
+    # 1) BOOTSTRAP (Parallelized)
     # --------------------------------------------------
 
     if method == "bootstrap":
 
-        boot_levels = np.zeros((n_boot, len(T_fit)))
-
-        for i in range(n_boot):
-
+        def bootstrap_iteration(seed):
+            """Single bootstrap iteration"""
+            np.random.seed(seed)
             sim = stats.genextreme.rvs(c, loc=loc, scale=scale, size=len(data))
             c_b, loc_b, scale_b = stats.genextreme.fit(sim)
+            return stats.genextreme.ppf(P, c_b, loc=loc_b, scale=scale_b)
 
-            boot_levels[i] = stats.genextreme.ppf(
-                P, c_b, loc=loc_b, scale=scale_b
-            )
+        # Parallel execution
+        boot_levels = Parallel(n_jobs=n_jobs, backend='loky')(
+            delayed(bootstrap_iteration)(i) for i in range(n_boot)
+        )
+        boot_levels = np.array(boot_levels)
 
         lower = np.percentile(boot_levels, 100*alpha/2, axis=0)
         upper = np.percentile(boot_levels, 100*(1-alpha/2), axis=0)
@@ -309,3 +314,168 @@ def value_to_return_period(value, c, loc, scale):
     return return_period
 
 #=====================================================================
+
+ # Calculate autocorrelation function
+def calculate_acf(data, nlags=200, n_jobs=-1):
+    """
+    Calculate autocorrelation function (ACF) using parallel processing.
+    
+    Parameters
+    ----------
+    data : array-like
+        Input data array
+    nlags : int, default=200
+        Number of lags to compute
+    n_jobs : int, default=-1
+        Number of jobs for parallel processing. -1 means using all processors.
+    
+    Returns
+    -------
+    acf_values : np.ndarray
+        Autocorrelation values for lags 0 to nlags
+    """
+    mmn = np.mean(data)
+    c0 = np.sum((data - mmn) ** 2) / len(data)
+    
+    # Define function to compute ACF for a single lag
+    def compute_lag(k, data, mmn, c0):
+        c_k = np.sum((data[:-k] - mmn) * (data[k:] - mmn)) / len(data)
+        return c_k / c0
+    
+    # Parallelize lag computation
+    acf_lags = Parallel(n_jobs=n_jobs)(
+        delayed(compute_lag)(k, data, mmn, c0) for k in range(1, nlags + 1)
+    )
+    
+    # Combine results with ACF at lag 0
+    acf_values = np.concatenate([[1.0], acf_lags])
+    
+    return acf_values
+
+#=====================================================================
+
+# Function to compute Probability Weighted Moments (PWM) for GPD - Parallelized
+def compute_pwm(data, r, n_jobs=-1):
+    """
+    Compute Probability Weighted Moments for GPD using parallel processing.
+    
+    Parameters
+    ----------
+    data : array-like
+        Input data array
+    r : int
+        Order of the PWM (0, 1, 2, ...)
+    n_jobs : int, default=-1
+        Number of jobs for parallel processing. -1 means using all processors.
+    
+    Returns
+    -------
+    pwm : float
+        Probability weighted moment of order r
+    """
+    n = len(data)
+    x = np.sort(data)
+    
+    # Define function to compute weight and contribution for single index
+    def compute_contribution(j, x, n, r):
+        weight = 1.0
+        for k in range(r):
+            if n - k - 1 > 0:
+                weight *= (j - k) / (n - k - 1)
+        return x[j] * weight / n
+    
+    # Parallelize computation across all j indices
+    contributions = Parallel(n_jobs=n_jobs)(
+        delayed(compute_contribution)(j, x, n, r) for j in range(n)
+    )
+    
+    pwm = np.sum(contributions)
+    return pwm
+
+#=====================================================================
+
+# Function to fit GPD using L-moments or MLE
+def gpd_fit(data, u, method="l-mom"):
+    """
+    Fit Generalized Pareto Distribution (GPD) to data above a specified threshold.
+    
+    Parameters
+    ----------
+    data : array-like
+        Input data array
+    u : float
+        Threshold value for exceedances
+    method : str, default="l-mom"
+        Fitting method for GPD parameters. 
+        Options include "l-mom" for L-moments and "mle" for maximum likelihood estimation.
+    
+    Returns
+    -------
+    c_gp : float
+        Shape parameter of the fitted GPD
+    loc_gp : float
+        Location parameter of the fitted GPD (equal to threshold u)
+    scale_gp : float
+        Scale parameter of the fitted GPD   
+    params : tuple
+        Fitted GPD parameters (shape, loc, scale)
+    """
+    # Extract exceedances above the threshold
+    exceedances = data - u
+    exceedances = exceedances[exceedances >= 0]
+
+    # Fit GPD to exceedances
+    if method == "l-mom":
+        # Implementation for L-moments fitting
+        if len(exceedances) < 3:
+            raise ValueError('Need at least 3 exceedances for L-moment GPD fitting.')   
+        # Compute sample L-moments following Hosking & Wallis (1997)
+        # L_r = E[X * Pr(r-1, n-r)], where Pr are shifted Legendre polynomials
+        x = np.sort(exceedances)
+        n = len(x)
+        # Compute PWMs
+        b0 = compute_pwm(x, 0)  # alpha
+        b1 = compute_pwm(x, 1)  # beta
+        b2 = compute_pwm(x, 2)  # gamma
+
+        # Convert PWMs to L-moments
+        # L1 = b0
+        # L2 = 2*b1 - b0
+        # L3 = 6*b2 - 6*b1 + b0
+        l1 = b0
+        l2 = 2.0 * b1 - b0
+        l3 = 6.0 * b2 - 6.0 * b1 + b0
+
+        if l1 <= 0 or l2 <= 0:
+            raise ValueError(f'Invalid sample L-moments: l1={l1:.4f}, l2={l2:.4f}. Both must be > 0.')
+
+        # L-moment ratios
+        t2 = l2 / l1  # L-CV
+        t3 = l3 / l2  # L-skewness
+
+        # GPD parameter estimation from L-moments (Hosking & Wallis 1997)
+        # For GPD: tau = l2/l1 = 1/(2 - xi)  =>  xi = 2 - 1/tau
+        # sigma = l1 * (1 - xi)
+        # mu is the threshold (u)
+
+        c_gp = 2.0 - 1.0 / t2  # shape parameter (xi)
+        scale_gp = l1 * (1.0 - c_gp)  # scale parameter (sigma)
+        loc_gp = u    # location (threshold)
+
+        if scale_gp <= 0:
+            raise ValueError(f'Computed non-positive GPD scale: {scale_gp:.6f}')
+
+        if c_gp <= -0.5:
+            print(f"Warning: shape parameter {c_gp:.4f} is outside typical range for GPD")
+        params=(l1, l2, l3, t2, t3)
+    elif method == "mle":
+        if len(exceedances) < 3:
+            raise ValueError('Need at least 3 exceedances for GPD fitting.')
+                # Fit on exceedances with location fixed at 0
+        c_gp, loc_exc, scale_gp = stats.genpareto.fit(exceedances, floc=0, method="MLE")
+        loc_gp = u
+        params=0
+    else:
+        raise ValueError("method must be 'l-mom' or 'mle'")
+
+    return c_gp, loc_gp, scale_gp, params
