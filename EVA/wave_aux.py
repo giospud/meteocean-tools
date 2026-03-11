@@ -1,3 +1,5 @@
+from math import dist
+
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -72,8 +74,13 @@ def plot_pos(df,var,method="weibull"):
     ----------
     df     : pandas.DataFrame 
     var    : Column name for which plotting positions are computed
-    method : Method used for plotting position. Options:
-             'weibull', 'gringorten', 'hazen', 'beard'.
+    method : str, optional
+        Method for plotting positions. Options include:
+        - "weibull": r/(n+1)
+        - "gringorten": (r-0.44)/(n+0.12)
+        - "hazen": (r-0.5)/n
+        - "beard": (r-0.31)/(n+0.38)
+        Default is "weibull"    
     Returns
     -------
     pp     : Plotting position values
@@ -109,20 +116,12 @@ def am(df,var):
     """
 
     r_max = df.loc[df[var].groupby(df.index.year).idxmax()]
-
-#    y_max = df[var].resample('YE').max()
-#    y_idx = df[var].groupby(df.index.year).idxmax().values
-#    result= pd.DataFrame({
-#    'max_value': y_max,
-#    'max_date': y_idx
-#    })
     
     return r_max
 
 #=====================================================================
 
-
-def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000, n_jobs=-1):
+def return_ci(data, T_fit, dist="gev",method="bootstrap", alpha=0.05, n_boot=1000, n_jobs=-1,lam=1, trld=None):
     """
     Compute GEV return levels and confidence intervals.
 
@@ -132,6 +131,7 @@ def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000, n_jo
         Observed extremes
     T_fit : array-like
         Return periods where the curve is evaluated
+    dist: "gev" or "gpd"    
     method : str
         "bootstrap", "delta", or "profile"
     alpha : float
@@ -141,6 +141,10 @@ def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000, n_jo
     n_jobs : int
         Number of parallel jobs for bootstrap (default=-1 uses all CPUs)
         Set to 1 to disable parallelization
+    lam : float
+        Average number of events per year (for GPD return level calculation)
+    trld : float
+        Threshold for GPD fitting (if dist="gpd")
 
     Returns
     -------
@@ -151,13 +155,16 @@ def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000, n_jo
     """
 
     data = np.asarray(data)
+    P = 1 - 1/(np.asarray(T_fit)*lam)
 
-    # Fit GEV
-    c, loc, scale = stats.genextreme.fit(data)
-
-    P = 1 - 1/np.asarray(T_fit)
-
-    rl = stats.genextreme.ppf(P, c, loc=loc, scale=scale)
+    if dist=="gev":   # Fit GEV
+        c, loc, scale = stats.genextreme.fit(data)
+        rl = stats.genextreme.ppf(P, c, loc=loc, scale=scale)
+    elif dist=="gpd": # Fit GPD
+        u=trld if trld is not None else 0.0
+        c, loc, scale, _ = gpd_fit(data, u, method="l-mom")
+        print(c,loc,scale)
+        rl = stats.genpareto.ppf(P, c, loc=loc, scale=scale)
 
     # --------------------------------------------------
     # 1) BOOTSTRAP (Parallelized)
@@ -165,17 +172,22 @@ def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000, n_jo
 
     if method == "bootstrap":
 
-        def bootstrap_iteration(seed):
+        def bootstrap_iteration(seed,cdfP):
             """Single bootstrap iteration"""
             np.random.seed(seed)
-            sim = stats.genextreme.rvs(c, loc=loc, scale=scale, size=len(data))
-            c_b, loc_b, scale_b = stats.genextreme.fit(sim)
-            return stats.genextreme.ppf(P, c_b, loc=loc_b, scale=scale_b)
+            if cdfP=="gev":   # Fit GEV
+                sim = stats.genextreme.rvs(c, loc=loc, scale=scale, size=len(data))
+                c_b, loc_b, scale_b = stats.genextreme.fit(sim)
+                return stats.genextreme.ppf(P, c_b, loc=loc_b, scale=scale_b)
+            elif cdfP=="gpd": # Fit GPD
+                sim = stats.genpareto.rvs(c, loc=loc, scale=scale, size=len(data))
+                c_b, loc_b, scale_b, _ = gpd_fit(sim, u, method="l-mom")
+                return stats.genpareto.ppf(P, c_b, loc=loc_b, scale=scale_b)
 
         # Parallel execution
         boot_levels = Parallel(n_jobs=n_jobs, backend='loky')(
-            delayed(bootstrap_iteration)(i) for i in range(n_boot)
-        )
+            delayed(bootstrap_iteration)(i, dist) for i in range(n_boot)
+                                                             )
         boot_levels = np.array(boot_levels)
 
         lower = np.percentile(boot_levels, 100*alpha/2, axis=0)
@@ -209,8 +221,15 @@ def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000, n_jo
                 p1[j] += eps
                 p2[j] -= eps
 
-                rl1 = stats.genextreme.ppf(p, p1[0], loc=p1[1], scale=p1[2])
-                rl2 = stats.genextreme.ppf(p, p2[0], loc=p2[1], scale=p2[2])
+                if dist=="gev":   # Fit GEV
+                    rl1 = stats.genextreme.ppf(p, p1[0], loc=p1[1], scale=p1[2])
+                elif dist=="gpd": # Fit GPD
+                    rl1 = stats.genpareto.ppf(p, p1[0], loc=p1[1], scale=p1[2])
+
+                if dist=="gev":   # Fit GEV
+                    rl2 = stats.genextreme.ppf(p, p2[0], loc=p2[1], scale=p2[2])
+                elif dist=="gpd": # Fit GPD
+                    rl2 = stats.genpareto.ppf(p, p2[0], loc=p2[1], scale=p2[2])
 
                 grad[j] = (rl1 - rl2)/(2*eps)
 
@@ -230,13 +249,21 @@ def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000, n_jo
             c, loc, scale = params
             if scale <= 0:
                 return np.inf
-            return -np.sum(stats.genextreme.logpdf(data, c, loc=loc, scale=scale))
+            if dist=="gev":
+                return -np.sum(stats.genextreme.logpdf(data, c, loc=loc, scale=scale))
+            elif dist=="gpd":
+                return -np.sum(stats.genpareto.logpdf(data, c, loc=loc, scale=scale))
 
+        if dist=="gev":
+            bounds=[(-1,1),(None,None),(1e-6,None)]
+        elif dist=="gpd":
+            bounds=[(-1,1),(None,None),(1e-6,None)]
+            
         res = minimize(
             negloglik,
             x0=[c, loc, scale],
             method="L-BFGS-B",
-            bounds=[(-1,1),(None,None),(1e-6,None)]
+            bounds=bounds
         )
 
         ll_max = -res.fun
@@ -259,18 +286,27 @@ def gev_return_ci(data, T_fit, method="bootstrap", alpha=0.05, n_boot=1000, n_jo
                     if scale <= 0:
                         return np.inf
 
-                    z_model = stats.genextreme.ppf(p, c, loc=loc, scale=scale)
+                    if dist=="gev":
+                        z_model = stats.genextreme.ppf(p, c, loc=loc, scale=scale)
+                    elif dist=="gpd":
+                        z_model = stats.genpareto.ppf(p, c, loc=loc, scale=scale)
+                        
                     penalty = 1e6*(z_model - z)**2
 
-                    return -np.sum(
-                        stats.genextreme.logpdf(data, c, loc=loc, scale=scale)
-                    ) + penalty
+                    if dist=="gev":
+                        return -np.sum(
+                            stats.genextreme.logpdf(data, c, loc=loc, scale=scale)
+                        ) + penalty
+                    elif dist=="gpd":
+                        return -np.sum(
+                            stats.genpareto.logpdf(data, c, loc=loc, scale=scale)
+                        ) + penalty
 
                 res = minimize(
                     constrained_nll,
                     x0=[c, loc, scale],
                     method="L-BFGS-B",
-                    bounds=[(-1,1),(None,None),(1e-6,None)]
+                    bounds=bounds
                 )
 
                 ll_vals.append(-res.fun)
@@ -420,10 +456,9 @@ def gpd_fit(data, u, method="l-mom"):
     params : tuple
         Fitted GPD parameters (shape, loc, scale)
     """
-    # Extract exceedances above the threshold
     exceedances = data - u
     exceedances = exceedances[exceedances >= 0]
-
+    
     # Fit GPD to exceedances
     if method == "l-mom":
         # Implementation for L-moments fitting
@@ -453,29 +488,82 @@ def gpd_fit(data, u, method="l-mom"):
         t2 = l2 / l1  # L-CV
         t3 = l3 / l2  # L-skewness
 
-        # GPD parameter estimation from L-moments (Hosking & Wallis 1997)
-        # For GPD: tau = l2/l1 = 1/(2 - xi)  =>  xi = 2 - 1/tau
-        # sigma = l1 * (1 - xi)
-        # mu is the threshold (u)
+        if u==0:
+            # Working without threshold correction for L-moments, as per Hosking & Wallis (1997)
+            c_gp = (1.0-3.0*t3)/(1.0+t3)         # shape parameter
+            scale_gp = (1.0+c_gp)*(2.0+c_gp)*l2  # scale parameter
+            loc_gp = l1-(2.0+c_gp)*l2            # location (threshold)
+            c_gp=-c_gp
 
-        c_gp = 2.0 - 1.0 / t2  # shape parameter (xi)
-        scale_gp = l1 * (1.0 - c_gp)  # scale parameter (sigma)
-        loc_gp = u    # location (threshold)
-
+        else:   
+            # Fixing the threshold, using only exceedances for L-moments
+            loc_gp = u    # location (threshold)
+            c_gp = 2.0 - 1.0 / t2  # shape parameter (xi)
+            scale_gp = l1 * (1.0 - c_gp)  # scale parameter (sigma)
+        
         if scale_gp <= 0:
             raise ValueError(f'Computed non-positive GPD scale: {scale_gp:.6f}')
 
         if c_gp <= -0.5:
             print(f"Warning: shape parameter {c_gp:.4f} is outside typical range for GPD")
-        params=(l1, l2, l3, t2, t3)
+        params=(b0, b1, b2, l1, l2, l3, t2, t3)
+
     elif method == "mle":
         if len(exceedances) < 3:
             raise ValueError('Need at least 3 exceedances for GPD fitting.')
                 # Fit on exceedances with location fixed at 0
-        c_gp, loc_exc, scale_gp = stats.genpareto.fit(exceedances, floc=0, method="MLE")
+        c_gp, loc_exc, scale_gp = stats.genpareto.fit(exceedances, floc=u, method="MLE")
         loc_gp = u
         params=0
     else:
         raise ValueError("method must be 'l-mom' or 'mle'")
 
+
+
     return c_gp, loc_gp, scale_gp, params
+
+#=====================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
