@@ -106,7 +106,6 @@ def plot_pos(df,var,method="weibull"):
 
 #=====================================================================
 
-
 def am(df,var):
     """
     am(df,var) - find annual maxima for variable var
@@ -194,7 +193,7 @@ def return_ci(data, T_fit, dist="gev",method="bootstrap", alpha=0.05, n_boot=100
         upper = np.percentile(boot_levels, 100*(1-alpha/2), axis=0)
 
     # --------------------------------------------------
-    # 2) DELTA METHOD
+    # 2) DELTA METHOD (Parallelized)
     # --------------------------------------------------
 
     elif method == "delta":
@@ -205,11 +204,8 @@ def return_ci(data, T_fit, dist="gev",method="bootstrap", alpha=0.05, n_boot=100
         # crude covariance estimate
         cov = np.eye(3) * np.var(data)/len(data)
 
-        lower = np.zeros_like(rl)
-        upper = np.zeros_like(rl)
-
-        for i,p in enumerate(P):
-
+        def delta_iteration(i, p, params, rl_i, cov, z, dist):
+            """Single delta method iteration for one return period"""
             grad = np.zeros(3)
             eps = 1e-6
 
@@ -236,11 +232,19 @@ def return_ci(data, T_fit, dist="gev",method="bootstrap", alpha=0.05, n_boot=100
             var_rl = grad @ cov @ grad
             se = np.sqrt(var_rl)
 
-            lower[i] = rl[i] - z*se
-            upper[i] = rl[i] + z*se
+            return (rl_i - z*se, rl_i + z*se)
+
+        # Parallel execution
+        ci_results = Parallel(n_jobs=n_jobs, backend='loky')(
+            delayed(delta_iteration)(i, p, params, rl[i], cov, z, dist) 
+            for i, p in enumerate(P)
+        )
+        
+        lower = np.array([r[0] for r in ci_results])
+        upper = np.array([r[1] for r in ci_results])
 
     # --------------------------------------------------
-    # 3) PROFILE LIKELIHOOD
+    # 3) PROFILE LIKELIHOOD (Parallelized)
     # --------------------------------------------------
 
     elif method == "profile":
@@ -269,13 +273,8 @@ def return_ci(data, T_fit, dist="gev",method="bootstrap", alpha=0.05, n_boot=100
         ll_max = -res.fun
         chi = stats.chi2.ppf(1-alpha, df=1)
 
-        lower = np.zeros_like(rl)
-        upper = np.zeros_like(rl)
-
-        for i,p in enumerate(P):
-
-            z_hat = rl[i]
-
+        def profile_iteration(i, p, z_hat, ll_max, chi, c, loc, scale, data, dist, bounds):
+            """Single profile likelihood iteration for one return period"""
             grid = np.linspace(0.5*z_hat, 1.5*z_hat, 80)
             ll_vals = []
 
@@ -316,11 +315,18 @@ def return_ci(data, T_fit, dist="gev",method="bootstrap", alpha=0.05, n_boot=100
             mask = 2*(ll_max - ll_vals) <= chi
 
             if np.any(mask):
-                lower[i] = grid[mask].min()
-                upper[i] = grid[mask].max()
+                return (grid[mask].min(), grid[mask].max())
             else:
-                lower[i] = np.nan
-                upper[i] = np.nan
+                return (np.nan, np.nan)
+
+        # Parallel execution
+        ci_results = Parallel(n_jobs=n_jobs, backend='loky')(
+            delayed(profile_iteration)(i, p, rl[i], ll_max, chi, c, loc, scale, data, dist, bounds)
+            for i, p in enumerate(P)
+        )
+        
+        lower = np.array([r[0] for r in ci_results])
+        upper = np.array([r[1] for r in ci_results])
 
     else:
         raise ValueError("method must be 'bootstrap', 'delta', or 'profile'")
@@ -330,22 +336,43 @@ def return_ci(data, T_fit, dist="gev",method="bootstrap", alpha=0.05, n_boot=100
 #=====================================================================
 
 # Function to calculate return period from a given value
-def value_to_return_period(value, c, loc, scale):
+def value_to_return_period(value, c, loc, scale, dist="gev", lam=1):
     """
-    Calculate return period for a given value using fitted GEV parameters
+    Calculate return period for a given value using fitted distribution parameters
     
-    Parameters:
-    value: the value of the variable (e.g., Hs in meters)
-    c, loc, scale: GEV distribution parameters
+    Parameters
+    ----------
+    value : float
+        The value of the variable (e.g., Hs in meters)
+    c : float
+        Shape parameter
+    loc : float
+        Location parameter
+    scale : float
+        Scale parameter
+    dist : str, optional
+        Distribution type: "gev" for GEV (default) or "gpd" for GPD
+    lam : float, optional
+        Average number of events per year (for GPD return period calculation)
+        Default is 1 (for annual maxima)
     
-    Returns:
-    return_period: return period in years
+    Returns
+    -------
+    return_period : float
+        Return period in years
     """
-    # Calculate probability of non-exceedance using GEV CDF
-    P = stats.genextreme.cdf(value, c, loc=loc, scale=scale)
-    
-    # Convert to return period: T = 1/(1-P)
-    return_period = 1 / (1 - P)
+    if dist == "gev":
+        # Calculate probability of non-exceedance using GEV CDF
+        P = stats.genextreme.cdf(value, c, loc=loc, scale=scale)
+        # Convert to return period: T = 1/(1-P)
+        return_period = 1 / (1 - P)
+    elif dist == "gpd":
+        # Calculate probability of non-exceedance using GPD CDF
+        P = stats.genpareto.cdf(value, c, loc=loc, scale=scale)
+        # For POT: T = 1 / (lambda * (1 - P))
+        return_period = 1 / (lam * (1 - P))
+    else:
+        raise ValueError("dist must be 'gev' or 'gpd'")
     
     return return_period
 
